@@ -21,6 +21,10 @@ This project is written completely in Python using the Pygame library.
 * **Player health & invulnerability:** 3 hearts (`HP`) with brief invulnerability frames after taking damage or dashing.
 * **Custom pixel art & tilesets:** pixel-scaled sprites, ground tileset support, and screen shake / particle effects.
 
+## Changelog
+
+See all notable changes and updates in [CHANGELOG.md](CHANGELOG.md).
+
 ## How to Run
 
 1. Make sure **Python** and **Pygame** are installed:
