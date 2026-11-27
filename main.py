@@ -1,7 +1,8 @@
-import pygame
+import os
+import sys
 import math
 import random
-import sys
+import pygame
 
 # ---------- Инициализация ----------
 pygame.init()
@@ -10,9 +11,78 @@ screen = pygame.display.set_mode((W, H))
 pygame.display.set_caption("Boss Fight - Cuphead Style")
 clock = pygame.time.Clock()
 
-# Шрифт с кириллицей
+# Пути к PNG-спрайтам (положите файлы рядом со скриптом или укажите свой путь)
+PLAYER_SPRITE_PATH = "player_1.png"
+BOSS_SPRITE_PATH = "boss_1.png"
+TILESET_PATH = "tilesetgrass.png"
+BULLET_SHEET_PATH = "FoxShotSheet.png"
+
 def get_font(size, bold=False):
     return pygame.font.SysFont("dejavusansmono,consolas,couriernew,arial", size, bold=bold)
+
+
+def load_sprite(path, size, fallback_color):
+    """Загружает PNG с альфа-каналом и подгоняет размер; при ошибке возвращает заглушку."""
+    w, h = size
+    if path and os.path.isfile(path):
+        try:
+            img = pygame.image.load(path).convert_alpha()
+            return pygame.transform.scale(img, (w, h))
+        except pygame.error:
+            pass
+
+    fallback = pygame.Surface((w, h), pygame.SRCALPHA)
+    pygame.draw.rect(fallback, (*fallback_color, 170), (0, 0, w, h), border_radius=8)
+    pygame.draw.rect(fallback, (0, 0, 0, 220), (0, 0, w, h), 3, border_radius=8)
+    return fallback
+
+
+def load_ground_tile(path, target_h):
+    """Вырезает горизонтальную полосу земли с травой из тайлсета и масштабирует без размытия."""
+    if path and os.path.isfile(path):
+        try:
+            sheet = pygame.image.load(path).convert_alpha()
+            sw, sh = sheet.get_size()
+            strip_w = max(16, int(sw * 0.25))
+            strip_h = max(16, int(sh * 0.22))
+            strip_x = 6
+            strip_y = max(0, sh - strip_h)
+
+            tile = sheet.subsurface((strip_x, strip_y, strip_w, strip_h)).copy()
+
+            # Целый множитель по высоте, чтобы пиксели не "плыли" по пропорциям
+            scale_factor = max(1, round(target_h / max(1, tile.get_height())))
+            scaled_w = tile.get_width() * scale_factor
+            scaled_h = tile.get_height() * scale_factor
+            return pygame.transform.scale(tile, (scaled_w, scaled_h))
+        except pygame.error:
+            pass
+
+    fallback = pygame.Surface((64, target_h), pygame.SRCALPHA)
+    fallback.fill((90, 58, 32))
+    pygame.draw.rect(fallback, (46, 204, 113), (0, 0, 64, max(8, target_h // 4)))
+    return fallback
+
+
+def load_player_bullet_sprites(path, scale=2):
+    """Загружает синий огонёк из спрайт-листа."""
+    if path and os.path.isfile(path):
+        try:
+            sheet = pygame.image.load(path).convert_alpha()
+            # Координаты синего маленького ромба (6-й столбец в 4-м ряду сверху;
+            # если нужно точнее подправить рамку — подстрой rect (x, y, w, h))
+            rect = pygame.Rect(36, 51, 5, 12)
+            raw = sheet.subsurface(rect).copy()
+
+            # В листе огонёк смотрит вверх, поэтому поворачиваем по направлению полёта
+            right_img = pygame.transform.rotate(raw, -90)
+            right_img = pygame.transform.scale_by(right_img, scale)
+            left_img = pygame.transform.flip(right_img, True, False)
+            return right_img, left_img
+        except (pygame.error, ValueError):
+            pass
+
+    return None, None
 
 font_big = get_font(72, True)
 font_med = get_font(28)
@@ -22,7 +92,7 @@ font_small = get_font(18, True)
 GRAVITY = 0.9
 JUMP = -18
 SPEED = 6
-GROUND_Y = H - 60
+GROUND_Y = H - 45
 
 # Отдельный слой для экранной тряски
 game_surf = pygame.Surface((W, H))
@@ -53,8 +123,10 @@ class Particle:
 # ИГРОК
 # ============================================================
 class Player:
-    def __init__(self):
-        self.w, self.h = 40, 60
+    def __init__(self, sprite_path=PLAYER_SPRITE_PATH):
+        self.w, self.h = 56, 68
+        self.sprite_left = load_sprite(sprite_path, (self.w, self.h), (70, 170, 255))
+        self.sprite_right = pygame.transform.flip(self.sprite_left, True, False)
         self.reset()
 
     def reset(self):
@@ -92,9 +164,11 @@ class Player:
             self.vy = 0
         else:
             if left:
-                self.vx = -SPEED; self.facing = -1
+                self.vx = -SPEED
+                self.facing = -1
             elif right:
-                self.vx = SPEED; self.facing = 1
+                self.vx = SPEED
+                self.facing = 1
             else:
                 self.vx *= 0.7
 
@@ -107,10 +181,10 @@ class Player:
         if dash and self.dash_cd == 0 and self.dash_time == 0:
             self.dash_time = 12
             self.dash_cd = 45
-            self.invuln = max(self.invuln, 14) # бонус: неуязвимость при рывке
+            self.invuln = max(self.invuln, 14)
             for _ in range(6):
                 game.particles.append(Particle(
-                    self.x + self.w/2, self.y + self.h/2,
+                    self.x + self.w / 2, self.y + self.h / 2,
                     random.uniform(-4, 4), random.uniform(-4, 0),
                     (160, 224, 255), 30))
 
@@ -147,8 +221,8 @@ class Player:
             return
         self.shoot_cd = 8
         game.bullets.append(Bullet(
-            self.x + self.w/2 + self.facing * 25,
-            self.y + self.h/2 - 5,
+            self.x + self.w / 2 + self.facing * 25,
+            self.y + self.h / 2 - 5,
             self.facing * 14, 0, 7))
 
     def hit(self, game):
@@ -157,7 +231,7 @@ class Player:
         game.screen_shake = 12
         for _ in range(12):
             game.particles.append(Particle(
-                self.x + self.w/2, self.y + self.h/2,
+                self.x + self.w / 2, self.y + self.h / 2,
                 random.uniform(-4, 4), random.uniform(-6, 2),
                 (255, 64, 64), 30))
         if self.hp <= 0:
@@ -170,55 +244,24 @@ class Player:
         if not self.alive:
             return
         if self.invuln > 0 and (self.invuln // 4) % 2 == 0:
-            return # мерцание
+            return  # мерцание при неуязвимости
 
-        cx = self.x + self.w / 2
-        cy = self.y + self.h / 2
-        f = self.facing
-
-        # Голова-чашка
-        pygame.draw.ellipse(surf, (245, 245, 245), (cx-18, cy-34, 36, 32))
-        pygame.draw.ellipse(surf, (0, 0, 0), (cx-18, cy-34, 36, 32), 3)
-        # Ручка
-        pygame.draw.circle(surf, (0,0,0), (int(cx + f*22), int(cy-18)), 9, 3)
-        # Глаза
-        pygame.draw.circle(surf, (0,0,0), (int(cx + f*5), int(cy-20)), 3)
-        pygame.draw.circle(surf, (0,0,0), (int(cx + f*12), int(cy-20)), 3)
-        # Улыбка
-        pygame.draw.arc(surf, (0,0,0), (cx-6, cy-16, 12, 8), math.pi, 2*math.pi, 2)
-
-        # Тело (шорты)
-        pygame.draw.rect(surf, (231, 76, 60), (cx-12, cy, 24, 20))
-        pygame.draw.rect(surf, (0,0,0), (cx-12, cy, 24, 20), 3)
-
-        # Ноги
-        lo = math.sin(self.anim_t * 0.3) * 3 if self.on_ground else 0
-        pygame.draw.rect(surf, (255,255,255), (cx-10, cy+20, 8, 10+lo))
-        pygame.draw.rect(surf, (0,0,0), (cx-10, cy+20, 8, 10+lo), 2)
-        pygame.draw.rect(surf, (255,255,255), (cx+2, cy+20, 8, 10-lo))
-        pygame.draw.rect(surf, (0,0,0), (cx+2, cy+20, 8, 10-lo), 2)
-
-        # Рука с пистолетом
-        if f > 0:
-            pygame.draw.rect(surf, (255,255,255), (cx+10, cy-5, 14, 6))
-            pygame.draw.rect(surf, (0,0,0), (cx+10, cy-5, 14, 6), 2)
-            pygame.draw.circle(surf, (51,51,51), (int(cx+24), int(cy-2)), 4)
-        else:
-            pygame.draw.rect(surf, (255,255,255), (cx-24, cy-5, 14, 6))
-            pygame.draw.rect(surf, (0,0,0), (cx-24, cy-5, 14, 6), 2)
-            pygame.draw.circle(surf, (51,51,51), (int(cx-24), int(cy-2)), 4)
+        img = self.sprite_right if self.facing > 0 else self.sprite_left
+        surf.blit(img, (int(self.x), int(self.y)))
 
 
 # ============================================================
 # БОСС
 # ============================================================
 class Boss:
-    def __init__(self):
-        self.w, self.h = 150, 180
+    def __init__(self, sprite_path=BOSS_SPRITE_PATH):
+        self.w, self.h = 170, 200
         self.x = 700.0
-        self.y = 300.0
+        self.y = float(GROUND_Y - self.h)
         self.max_hp = 100
+        self.sprite = load_sprite(sprite_path, (self.w, self.h), (220, 60, 60))
         self.reset()
+        self.mask = pygame.mask.from_surface(self.sprite)
 
     def reset(self):
         self.hp = self.max_hp
@@ -234,7 +277,7 @@ class Boss:
         if self.hp <= 0:
             if self.dying == 0:
                 self.dying = 90
-                cx, cy = self.x + self.w/2, self.y + self.h/2
+                cx, cy = self.x + self.w / 2, self.y + self.h / 2
                 for _ in range(40):
                     game.particles.append(Particle(
                         cx, cy,
@@ -254,7 +297,7 @@ class Boss:
             game.screen_shake = 20
             for _ in range(25):
                 game.particles.append(Particle(
-                    self.x+self.w/2, self.y+self.h/2,
+                    self.x + self.w / 2, self.y + self.h / 2,
                     random.uniform(-6, 6), random.uniform(-8, 4),
                     (255, 215, 0), 40))
         if self.hp < self.max_hp * 0.25 and self.phase == 2:
@@ -262,7 +305,7 @@ class Boss:
             game.screen_shake = 20
             for _ in range(25):
                 game.particles.append(Particle(
-                    self.x+self.w/2, self.y+self.h/2,
+                    self.x + self.w / 2, self.y + self.h / 2,
                     random.uniform(-6, 6), random.uniform(-8, 4),
                     (255, 48, 48), 40))
 
@@ -279,7 +322,6 @@ class Boss:
         if self.attack == 'slam':
             self.attack_step += 1
             if self.attack_step == 50:
-                game.screen_shake = 15
                 bx = p.x + p.w / 2
                 for _ in range(3):
                     game.boss_bullets.append(Bullet(
@@ -290,14 +332,14 @@ class Boss:
         # ---- SPREAD: веер ----
         elif self.attack == 'spread':
             if self.attack_step > 10 and self.attack_step % 15 == 0 and self.attack_step < 90:
-                cx, cy = self.x + self.w/2, self.y + self.h/2
-                ang = math.atan2(p.y + p.h/2 - cy, p.x + p.w/2 - cx)
-                count = 5 if self.phase >= 2 else 3
-                spread = 0.6
+                cx, cy = self.x + self.w / 2, self.y + self.h / 2
+                ang = math.atan2(p.y + p.h / 2 - cy, p.x + p.w / 2 - cx)
+                count = 3 if self.phase >= 1 else 2
+                spread = 1.2
                 for i in range(count):
-                    a = ang + (i - (count-1)/2) * (spread / max(1, count-1))
+                    a = ang + (i - (count - 1) / 2) * (spread / max(1, count - 1))
                     game.boss_bullets.append(Bullet(
-                        cx, cy, math.cos(a)*7, math.sin(a)*7,
+                        cx, cy, math.cos(a) * 7, math.sin(a) * 7,
                         12, gravity=0, life=180))
             self.attack_step += 1
 
@@ -305,69 +347,44 @@ class Boss:
         elif self.attack == 'rain':
             if self.attack_step > 10 and self.attack_step % 8 == 0 and self.attack_step < 100:
                 game.boss_bullets.append(Bullet(
-                    random.uniform(100, W-100), -20,
+                    random.uniform(100, W - 100), -20,
                     0, 6, 10, gravity=0.15, life=200))
             self.attack_step += 1
 
-    def draw(self, surf, player):
+    def draw(self, surf):
         if self.hp <= 0 and self.dying <= 0:
             return
 
-        cx = self.x + self.w / 2
-        cy = self.y + self.h / 2
+        dx = self.x
+        dy = self.y + math.sin(self.anim_t * 0.05) * 6
 
         if self.hurt > 0:
-            cx += random.uniform(-3, 3)
-            cy += random.uniform(-3, 3)
-        cy += math.sin(self.anim_t * 0.05) * 6
+            dx += random.uniform(-3, 3)
+            dy += random.uniform(-3, 3)
 
-        if self.phase == 3:
-            color, dark = (139, 0, 0), (74, 0, 0)
-        elif self.phase == 2:
-            color, dark = (192, 57, 43), (123, 31, 31)
-        else:
-            color, dark = (231, 76, 60), (168, 50, 50)
+        img = self.sprite.copy()
+        if self.phase == 2:
+            img.fill((255, 190, 170, 255), special_flags=pygame.BLEND_RGBA_MULT)
+        elif self.phase == 3:
+            img.fill((255, 110, 110, 255), special_flags=pygame.BLEND_RGBA_MULT)
 
-        # Тело
-        pygame.draw.ellipse(surf, color, (cx-75, cy-50, 150, 140))
-        pygame.draw.ellipse(surf, (0,0,0), (cx-75, cy-50, 150, 140), 5)
-        pygame.draw.ellipse(surf, dark, (cx-35, cy-20, 100, 100))
+        surf.blit(img, (int(dx), int(dy)))
 
-        # Голова
-        pygame.draw.ellipse(surf, color, (cx-65, cy-105, 130, 110))
-        pygame.draw.ellipse(surf, (0,0,0), (cx-65, cy-105, 130, 110), 5)
-
-        # Рога
-        pygame.draw.polygon(surf, dark, [(cx-40, cy-100), (cx-60, cy-140), (cx-25, cy-105)])
-        pygame.draw.polygon(surf, (0,0,0), [(cx-40, cy-100), (cx-60, cy-140), (cx-25, cy-105)], 3)
-        pygame.draw.polygon(surf, dark, [(cx+40, cy-100), (cx+60, cy-140), (cx+25, cy-105)])
-        pygame.draw.polygon(surf, (0,0,0), [(cx+40, cy-100), (cx+60, cy-140), (cx+25, cy-105)], 3)
-
-        # Глаза
-        pygame.draw.ellipse(surf, (255,255,255), (cx-43, cy-80, 36, 40))
-        pygame.draw.ellipse(surf, (0,0,0), (cx-43, cy-80, 36, 40), 3)
-        pygame.draw.ellipse(surf, (255,255,255), (cx+7, cy-80, 36, 40))
-        pygame.draw.ellipse(surf, (0,0,0), (cx+7, cy-80, 36, 40), 3)
-
-        # Зрачки следят за игроком
-        dx = max(-8, min(8, (player.x - self.x) / 100))
-        dy = max(-6, min(6, (player.y - self.y) / 100))
-        pygame.draw.circle(surf, (0,0,0), (int(cx-25+dx), int(cy-60+dy)), 8)
-        pygame.draw.circle(surf, (0,0,0), (int(cx+25+dx), int(cy-60+dy)), 8)
-
-        # Злые брови
-        pygame.draw.line(surf, (0,0,0), (cx-45, cy-85), (cx-10, cy-75), 6)
-        pygame.draw.line(surf, (0,0,0), (cx+45, cy-85), (cx+10, cy-75), 6)
-
-        # Рот с зубами
-        pygame.draw.ellipse(surf, (0,0,0), (cx-30, cy-35, 60, 30))
-        for i in range(-2, 3):
-            pygame.draw.rect(surf, (255,255,255), (cx + i*10 - 3, cy-35, 6, 8))
+        if self.hurt > 0:
+            # Цвет вспышки: можно заменить на (255, 255, 255, 180) для белой вспышки
+            # или (255, 90, 90, 170) для мягкого красного импульса
+            flash = self.mask.to_surface(
+                setcolor=(255, 90, 90, 170),
+                unsetcolor=(0, 0, 0, 0)
+            ).convert_alpha()
+            surf.blit(flash, (int(dx), int(dy)))
 
         # Предупреждение о SLAM
         if self.attack == 'slam' and 20 < self.attack_step < 50:
+            cx = self.x + self.w / 2
+            cy = self.y + self.h / 2
             r = 30 + math.sin(self.attack_step * 0.5) * 10
-            s = pygame.Surface((int(r*2), int(r*2)), pygame.SRCALPHA)
+            s = pygame.Surface((int(r * 2), int(r * 2)), pygame.SRCALPHA)
             pygame.draw.circle(s, (255, 0, 0, 128), (int(r), int(r)), int(r))
             surf.blit(s, (int(cx - r), int(cy - 180 - r)))
 
@@ -385,6 +402,8 @@ class Game:
         self.state = 'playing'
         self.screen_shake = 0
         self.running = True
+        self.ground_tile = load_ground_tile(TILESET_PATH, H - GROUND_Y)
+        self.bullet_right, self.bullet_left = load_player_bullet_sprites(BULLET_SHEET_PATH, scale=2)
 
     def reset(self):
         self.player.reset()
@@ -419,7 +438,8 @@ class Game:
     def update_bullets(self):
         alive = []
         for b in self.bullets:
-            b.x += b.vx; b.y += b.vy
+            b.x += b.vx
+            b.y += b.vy
             if b.x < -20 or b.x > W + 20:
                 continue
             bs = self.boss
@@ -432,7 +452,7 @@ class Game:
                     self.particles.append(Particle(
                         b.x, b.y,
                         random.uniform(-3, 3), random.uniform(-4, 2),
-                        (255, 204, 0), 20))
+                        (0, 240, 170), 20))
                 continue
             alive.append(b)
         self.bullets = alive
@@ -447,8 +467,8 @@ class Game:
             if b.life <= 0 or b.y > H + 50 or b.x < -50 or b.x > W + 50:
                 continue
             if p.alive and p.invuln == 0:
-                dx = b.x - (p.x + p.w/2)
-                dy = b.y - (p.y + p.h/2)
+                dx = b.x - (p.x + p.w / 2)
+                dy = b.y - (p.y + p.h / 2)
                 if math.hypot(dx, dy) < b.r + 20:
                     p.hit(self)
                     continue
@@ -472,7 +492,7 @@ class Game:
         sy = random.uniform(-self.screen_shake, self.screen_shake) if self.screen_shake > 0 else 0
 
         self.draw_background(game_surf)
-        self.boss.draw(game_surf, self.player)
+        self.boss.draw(game_surf)
         self.draw_bullets(game_surf)
         self.player.draw(game_surf)
         self.draw_particles(game_surf)
@@ -494,9 +514,9 @@ class Game:
 
         for y in range(H):
             t = y / H
-            col = (int(top[0] + (bot[0]-top[0])*t),
-                   int(top[1] + (bot[1]-top[1])*t),
-                   int(top[2] + (bot[2]-top[2])*t))
+            col = (int(top[0] + (bot[0] - top[0]) * t),
+                   int(top[1] + (bot[1] - top[1]) * t),
+                   int(top[2] + (bot[2] - top[2]) * t))
             pygame.draw.line(surf, col, (0, y), (W, y))
 
         # Облака
@@ -511,33 +531,30 @@ class Game:
             surf.blit(s, (int(cx - 90), int(cy - 30)))
 
         # Земля
-        if self.boss.phase == 3:
-            gc, gr = (26, 10, 10), (74, 0, 0)
-        else:
-            gc = (90, 58, 32)
-            gr = (46, 204, 113) if self.boss.phase == 1 else (192, 57, 43)
+        tile_w = self.ground_tile.get_width()
+        for x in range(0, W, tile_w):
+            piece = self.ground_tile.copy()
+            if self.boss.phase == 2:
+                piece.fill((255, 160, 140, 255), special_flags=pygame.BLEND_RGBA_MULT)
+            elif self.boss.phase == 3:
+                piece.fill((140, 60, 60, 255), special_flags=pygame.BLEND_RGBA_MULT)
+            surf.blit(piece, (x, GROUND_Y))
 
-        pygame.draw.rect(surf, gc, (0, GROUND_Y, W, H - GROUND_Y))
-        pygame.draw.line(surf, (0, 0, 0), (0, GROUND_Y), (W, GROUND_Y), 4)
-
-        for x in range(0, W, 30):
-            off = math.sin(x) * 3
-            pygame.draw.polygon(surf, gr, [
-                (x, GROUND_Y),
-                (x + 8, GROUND_Y - 8 - off),
-                (x + 16, GROUND_Y)])
+        pygame.draw.line(surf, (0, 0, 0), (0, GROUND_Y), (W, GROUND_Y), 3)
 
     def draw_bullets(self, surf):
         for b in self.bullets:
-            pygame.draw.circle(surf, (255, 221, 0), (int(b.x), int(b.y)), b.r)
-            pygame.draw.circle(surf, (0, 0, 0), (int(b.x), int(b.y)), b.r, 2)
-            pygame.draw.circle(surf, (255, 255, 255),
-                               (int(b.x - 2), int(b.y - 2)), b.r // 3)
+            if self.bullet_right and self.bullet_left:
+                img = self.bullet_right if b.vx >= 0 else self.bullet_left
+                surf.blit(img, img.get_rect(center=(int(b.x), int(b.y))))
+            else:
+                pygame.draw.circle(surf, (0, 0, 0), (int(b.x), int(b.y)), b.r)
+
         for b in self.boss_bullets:
-            pygame.draw.circle(surf, (155, 89, 182), (int(b.x), int(b.y)), b.r)
+            pygame.draw.circle(surf, (0, 255, 0), (int(b.x), int(b.y)), b.r)
             pygame.draw.circle(surf, (0, 0, 0), (int(b.x), int(b.y)), b.r, 3)
             pygame.draw.circle(surf, (232, 180, 255),
-                               (int(b.x - b.r//4), int(b.y - b.r//4)), b.r // 2)
+                               (int(b.x - b.r // 4), int(b.y - b.r // 4)), b.r // 2)
 
     def draw_particles(self, surf):
         for p in self.particles:
@@ -553,13 +570,7 @@ class Game:
         bw, bh = 500, 26
         bx = W // 2 - bw // 2
         by = 30
-        pygame.draw.rect(surf, (0, 0, 0), (bx-3, by-3, bw+6, bh+6))
-        pygame.draw.rect(surf, (58, 26, 26), (bx, by, bw, bh))
-
-        bw, bh = 500, 26
-        bx = W // 2 - bw // 2
-        by = 30
-        pygame.draw.rect(surf, (0, 0, 0), (bx-3, by-3, bw+6, bh+6))
+        pygame.draw.rect(surf, (0, 0, 0), (bx - 3, by - 3, bw + 6, bh + 6))
         pygame.draw.rect(surf, (58, 26, 26), (bx, by, bw, bh))
 
         frac = max(0, self.boss.hp / self.boss.max_hp)
@@ -573,18 +584,48 @@ class Game:
         pygame.draw.rect(surf, (255, 255, 255, 80), (bx, by, int(bw * frac), bh // 3))
         pygame.draw.rect(surf, (255, 255, 255), (bx, by, bw, bh), 2)
 
-        label = font_small.render("THE DEVIL", True, (255, 255, 255))
-        surf.blit(label, (W//2 - label.get_width()//2, by - 22))
+        label = font_small.render("THE VISCOUS", True, (255, 255, 255))
+        surf.blit(label, (W // 2 - label.get_width() // 2, by - 22))
 
     def draw_heart(self, surf, x, y, filled):
-        color = (255, 48, 80) if filled else (51, 51, 51)
-        pygame.draw.circle(surf, color, (int(x-6), int(y-4)), 8)
-        pygame.draw.circle(surf, color, (int(x+6), int(y-4)), 8)
-        pygame.draw.polygon(surf, color, [(x-14, y-2), (x+14, y-2), (x, y+14)])
-        pygame.draw.circle(surf, (0,0,0), (int(x-6), int(y-4)), 8, 2)
-        pygame.draw.circle(surf, (0,0,0), (int(x+6), int(y-4)), 8, 2)
-        pygame.draw.polygon(surf, (0,0,0),
-                            [(x-14, y-2), (x+14, y-2), (x, y+14)], 2)
+        color = (255, 48, 80, 255) if filled else (55, 55, 62, 255)
+        outline_col = (0, 0, 0, 255)
+
+        # Размер холста под одно сердце с запасом под обводку
+        sw, sh = 40, 36
+        cx, cy = sw // 2, 13
+        r = 8
+
+        def stamp_heart(target, col):
+            pygame.draw.circle(target, col, (cx - 6, cy), r)
+            pygame.draw.circle(target, col, (cx + 6, cy), r)
+            pygame.draw.polygon(target, col, [
+                (cx - 14, cy + 2),
+                (cx + 14, cy + 2),
+                (cx, cy + 18),
+            ])
+
+        # 1. Внешняя обводка за счёт сдвига силуэта на 2 px во все стороны
+        outline_surf = pygame.Surface((sw, sh), pygame.SRCALPHA)
+        for dx, dy in [(-2, 0), (2, 0), (0, -2), (0, 2), (-2, -2), (2, -2), (-2, 2), (2, 2)]:
+            temp = pygame.Surface((sw, sh), pygame.SRCALPHA)
+            stamp_heart(temp, outline_col)
+            outline_surf.blit(temp, (dx, dy))
+
+        # 2. Внутренняя заливка сердца
+        fill_surf = pygame.Surface((sw, sh), pygame.SRCALPHA)
+        stamp_heart(fill_surf, color)
+
+        # 3. Небольшой блик на заполненном сердце
+        if filled:
+            pygame.draw.circle(fill_surf, (255, 175, 190, 190), (cx - 7, cy - 2), 3)
+
+        # Собираем на одном слое, чтобы у сердца был единый альфа-канал
+        heart_surf = pygame.Surface((sw, sh), pygame.SRCALPHA)
+        heart_surf.blit(outline_surf, (0, 0))
+        heart_surf.blit(fill_surf, (0, 0))
+
+        surf.blit(heart_surf, (int(x - sw // 2), int(y - 14)))
 
     def draw_end_screen(self, surf):
         overlay = pygame.Surface((W, H), pygame.SRCALPHA)
@@ -598,11 +639,11 @@ class Game:
             t = font_big.render("GAME OVER", True, (255, 48, 48))
             s = font_med.render("Ты пал в бою...", True, (255, 255, 255))
 
-        surf.blit(t, (W//2 - t.get_width()//2, H//2 - 60))
-        surf.blit(s, (W//2 - s.get_width()//2, H//2 + 30))
+        surf.blit(t, (W // 2 - t.get_width() // 2, H // 2 - 60))
+        surf.blit(s, (W // 2 - s.get_width() // 2, H // 2 + 30))
 
         hint = font_small.render("Нажми R чтобы начать заново", True, (170, 170, 170))
-        surf.blit(hint, (W//2 - hint.get_width()//2, H//2 + 100))
+        surf.blit(hint, (W // 2 - hint.get_width() // 2, H // 2 + 100))
 
 
 # ============================================================
